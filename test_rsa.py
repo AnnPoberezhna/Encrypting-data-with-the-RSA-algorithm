@@ -171,7 +171,7 @@ def test_file_encryption_png():
     
     # Use your actual PNG image
     test_png_path = "png-beer.png"
-    encrypted_path = "png-beer.png.encrypted"
+    encrypted_path = "png-beer_encrypted.png"
     decrypted_path = "png-beer_decrypted.png"
     
     print(f"\n[2] Using actual PNG file: {test_png_path}")
