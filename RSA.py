@@ -1,6 +1,5 @@
-from sympy import isprime, randprime
+from sympy import randprime
 import math
-import os
 
 
 def generate_prime(min_bits, max_bits):

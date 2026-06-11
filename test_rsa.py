@@ -1,5 +1,4 @@
 from RSA import (
-    generate_prime,
     mod_inverse,
     extended_gcd,
     generate_keys,
@@ -181,13 +180,13 @@ def test_file_encryption_png():
         print("[!] Skipping file encryption test")
         return
     
-    print(f"[3] Encrypting file...")
+    print("[3] Encrypting file...")
     encrypt_file(test_png_path, encrypted_path, public_key)
     
-    print(f"\n[4] Decrypting file...")
+    print("\n[4] Decrypting file...")
     decrypt_file(encrypted_path, decrypted_path, private_key)
     
-    print(f"\n[5] Verification...")
+    print("\n[5] Verification...")
     with open(test_png_path, 'rb') as f:
         original = f.read()
     
