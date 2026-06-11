@@ -175,7 +175,6 @@ def decrypt_data(ciphertext_bytes, d, n):
     Decrypts data (file) in blocks.
     """
     cipher_block_size = (n.bit_length() + 7) // 8
-    plain_block_size = get_block_size(n)
     plaintext_blocks = []
     
     # Split data into blocks

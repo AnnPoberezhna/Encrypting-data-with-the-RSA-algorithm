@@ -1,3 +1,5 @@
+import logging
+
 from RSA import (
     mod_inverse,
     extended_gcd,
@@ -128,8 +130,6 @@ def test_data_encryption_decryption():
     n, e = public_key
     n_priv, d = private_key
     
-    block_size = get_block_size(n)
-    
     # Test data of various sizes
     test_data = [
         b"Hello World!",
@@ -204,8 +204,10 @@ def test_file_encryption_png():
     try:
         os.remove(encrypted_path)
         os.remove(decrypted_path)
-    except:
-        pass
+    except FileNotFoundError as e:
+        logging.warning(f"File not found during cleanup: {e}")
+    except PermissionError:
+        print("No permission to delete files.")
     
     assert match
     print("[✓] Test passed")
