@@ -9,8 +9,10 @@ from RSA import (
     get_block_size,
     encrypt_data,
     decrypt_data,
-    encrypt_file,
-    decrypt_file,
+    encrypt_png_file,
+    decrypt_png_file,
+    PNG_SIGNATURE,
+    _parse_png_chunks,
 )
 
 import time
@@ -159,57 +161,78 @@ def test_data_encryption_decryption():
 
 
 def test_file_encryption_png():
-    """Test PNG file encryption"""
+    """
+    Test PNG payload-only encryption:
+    - PNG signature and IHDR must survive unchanged.
+    - Encrypted IDAT data must differ from the original.
+    - After decryption the file must be byte-for-byte identical to the original.
+    """
     print("\n" + "="*70)
-    print("TEST: PNG File Encryption")
+    print("TEST: PNG Payload-Only Encryption (header/metadata preserved)")
     print("="*70)
-    
-    # Generate keys
-    print("\n[1] Generating keys...")
-    public_key, private_key = generate_keys(key_size=512)
-    
-    # Use your actual PNG image
+
     test_png_path = "png-beer.png"
     encrypted_path = "png-beer_encrypted.png"
     decrypted_path = "png-beer_decrypted.png"
-    
-    print(f"\n[2] Using actual PNG file: {test_png_path}")
-    
+
     if not os.path.exists(test_png_path):
         print(f"[!] File not found: {test_png_path}")
-        print("[!] Skipping file encryption test")
+        print("[!] Skipping PNG encryption test")
         return
-    
-    print("[3] Encrypting file...")
-    encrypt_file(test_png_path, encrypted_path, public_key)
-    
-    print("\n[4] Decrypting file...")
-    decrypt_file(encrypted_path, decrypted_path, private_key)
-    
-    print("\n[5] Verification...")
+
+    print("\n[1] Generating keys...")
+    public_key, private_key = generate_keys(key_size=512)
+
+    print(f"\n[2] Using PNG file: {test_png_path}")
     with open(test_png_path, 'rb') as f:
         original = f.read()
-    
+
+    print("\n[3] Encrypting PNG (payload only)...")
+    encrypt_png_file(test_png_path, encrypted_path, public_key)
+
+    with open(encrypted_path, 'rb') as f:
+        encrypted = f.read()
+
+    print("\n[4] Verifying structure is preserved...")
+
+    assert encrypted[:8] == PNG_SIGNATURE, "PNG signature must be preserved"
+    print("[✓] PNG signature intact")
+
+    orig_chunks = _parse_png_chunks(original)
+    enc_chunks  = _parse_png_chunks(encrypted)
+
+    orig_ihdr = next(cd for ct, cd in orig_chunks if ct == b'IHDR')
+    enc_ihdr  = next(cd for ct, cd in enc_chunks  if ct == b'IHDR')
+    assert orig_ihdr == enc_ihdr, "IHDR chunk must be identical"
+    print("[✓] IHDR chunk preserved")
+
+    orig_idat = b''.join(cd for ct, cd in orig_chunks if ct == b'IDAT')
+    enc_idat  = b''.join(cd for ct, cd in enc_chunks  if ct == b'IDAT')
+    assert orig_idat != enc_idat, "IDAT data must differ after encryption"
+    print("[✓] IDAT data is encrypted (differs from original)")
+
+    print("\n[5] Decrypting PNG...")
+    decrypt_png_file(encrypted_path, decrypted_path, private_key)
+
     with open(decrypted_path, 'rb') as f:
         recovered = f.read()
-    
+
     match = original == recovered
     status = "[✓]" if match else "[✗]"
-    
     print(f"{status} Original and decrypted files match: {match}")
-    print(f"  Original size: {len(original)} bytes")
+    print(f"  Original size:  {len(original)} bytes")
+    print(f"  Encrypted size: {len(encrypted)} bytes")
     print(f"  Decrypted size: {len(recovered)} bytes")
-    
-    # Cleanup
-    try:
-        os.remove(encrypted_path)
-        os.remove(decrypted_path)
-    except FileNotFoundError as e:
-        logging.warning(f"File not found during cleanup: {e}")
-    except PermissionError:
-        print("No permission to delete files.")
-    
-    assert match
+
+    for path in [encrypted_path, decrypted_path]:
+        try:
+            os.remove(path)
+        except FileNotFoundError as e:
+            logging.warning(f"File not found during cleanup: {e}")
+        except PermissionError:
+            print(f"No permission to delete {path}.")
+
+    assert match, "Decrypted file does not match the original"
     print("[✓] Test passed")
 
 
