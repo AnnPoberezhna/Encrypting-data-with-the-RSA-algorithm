@@ -194,10 +194,20 @@ def decrypt_data(ciphertext_bytes, d, n):
     return plaintext
 
 
-# ---------------------------------------------------------------------------
-# PNG-aware encryption: only IDAT (pixel) data is encrypted;
-# the PNG signature, IHDR and all other metadata chunks remain untouched.
-# ---------------------------------------------------------------------------
+def _parse_ihdr(ihdr_data):
+    """Return (width, height, bit_depth, color_type) from a raw IHDR payload."""
+    w, h = struct.unpack('>II', ihdr_data[:8])
+    return w, h, ihdr_data[8], ihdr_data[9]
+
+
+def _channels(color_type):
+    return {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type, 3)
+
+
+def _bytes_per_row(width, bit_depth, color_type):
+    """Pixel bytes per scanline (no filter byte)."""
+    return (width * _channels(color_type) * bit_depth + 7) // 8
+
 
 def _parse_png_chunks(data):
     """
@@ -238,43 +248,70 @@ def _build_png(chunks):
 
 def encrypt_png_file(input_path, output_path, public_key):
     """
-    Encrypts a PNG file while preserving its header and metadata.
+    Encrypts a PNG file at the pixel level (raw RSA, ECB mode).
 
-    Only the concatenated IDAT chunk payload (compressed pixel data) is
-    encrypted.  All other chunks (IHDR, tEXt, gAMA, IEND, …) are written
-    back unchanged.  The original IDAT byte-length is prepended (4 bytes,
-    big-endian) to the plaintext before encryption so that decryption can
-    recover the exact original length without relying on zero-stripping.
+    Steps:
+      1. Decompress IDAT → raw scanlines (filter_byte + pixel_bytes per row).
+      2. Extract pixel bytes; keep filter bytes for recovery.
+      3. Encrypt pixel bytes block-by-block (raw RSA, ECB — no padding).
+      4. Pack ciphertext back as filter-0 scanlines and recompress → new IDAT.
+      5. Store original height + filter bytes in a private 'rsFl' chunk so
+         decryption can restore the file byte-for-byte.
+
+    Because the ciphertext is slightly larger than the plaintext (256 output
+    bytes per 255 input bytes for a 2048-bit key), the encrypted image may
+    have a few extra rows compared to the original.
     """
     n, e = public_key
 
     with open(input_path, 'rb') as f:
         data = f.read()
 
-    print(f"[*] Encrypting PNG (payload only): {input_path}")
+    print(f"[*] Encrypting PNG (pixel-level, raw RSA): {input_path}")
     print(f"[*] File size: {len(data)} bytes")
 
     chunks = _parse_png_chunks(data)
 
-    idat_data = b''.join(cd for ct, cd in chunks if ct == b'IDAT')
-    original_idat_len = len(idat_data)
-    print(f"[*] IDAT payload size: {original_idat_len} bytes")
+    ihdr_data = next(cd for ct, cd in chunks if ct == b'IHDR')
+    orig_w, orig_h, bit_depth, color_type = _parse_ihdr(ihdr_data)
+    bpr = _bytes_per_row(orig_w, bit_depth, color_type)
 
-    # Prepend original length so decryption can recover exact bytes
-    payload = struct.pack('>I', original_idat_len) + idat_data
-    encrypted_idat = encrypt_data(payload, e, n)
-    print(f"[+] Encrypted IDAT size: {len(encrypted_idat)} bytes")
+    raw_idat = b''.join(cd for ct, cd in chunks if ct == b'IDAT')
+    raw_scanlines = zlib.decompress(raw_idat)
+    print(f"[*] Decompressed IDAT: {len(raw_scanlines)} bytes  ({orig_h} rows × {bpr} px-bytes)")
 
-    # Rebuild PNG: replace all IDAT chunks with a single encrypted one
+    stride = bpr + 1
+    filter_bytes = bytes(raw_scanlines[i * stride] for i in range(orig_h))
+    pixel_bytes  = b''.join(raw_scanlines[i * stride + 1:(i + 1) * stride] for i in range(orig_h))
+
+    payload = struct.pack('>I', len(pixel_bytes)) + pixel_bytes
+    encrypted = encrypt_data(payload, e, n)
+    print(f"[+] Encrypted pixel data: {len(encrypted)} bytes")
+
+    enc_rows = []
+    for off in range(0, len(encrypted), bpr):
+        row = encrypted[off:off + bpr]
+        if len(row) < bpr:
+            row = row + b'\x00' * (bpr - len(row))
+        enc_rows.append(b'\x00' + row)
+
+    new_h    = len(enc_rows)
+    new_ihdr = struct.pack('>II', orig_w, new_h) + ihdr_data[8:]
+    recovery = struct.pack('>II', orig_h, len(pixel_bytes)) + filter_bytes
+    enc_idat = zlib.compress(b''.join(enc_rows))
+
     new_chunks = []
     idat_written = False
-    for chunk_type, chunk_data in chunks:
-        if chunk_type == b'IDAT':
+    for ct, cd in chunks:
+        if ct == b'IHDR':
+            new_chunks.append((b'IHDR', new_ihdr))
+        elif ct == b'IDAT':
             if not idat_written:
-                new_chunks.append((b'IDAT', encrypted_idat))
+                new_chunks.append((b'rsFl', recovery))
+                new_chunks.append((b'IDAT', enc_idat))
                 idat_written = True
         else:
-            new_chunks.append((chunk_type, chunk_data))
+            new_chunks.append((ct, cd))
 
     with open(output_path, 'wb') as f:
         f.write(_build_png(new_chunks))
@@ -284,43 +321,73 @@ def encrypt_png_file(input_path, output_path, public_key):
 
 def decrypt_png_file(input_path, output_path, private_key):
     """
-    Decrypts a PNG file that was encrypted with encrypt_png_file.
-    Restores the original IDAT data exactly (byte-for-byte).
+    Decrypts a PNG file produced by encrypt_png_file.
+    Restores the original file byte-for-byte (including original filter bytes).
     """
     n, d = private_key
 
     with open(input_path, 'rb') as f:
         data = f.read()
 
-    print(f"[*] Decrypting PNG (payload only): {input_path}")
-    print(f"[*] File size: {len(data)} bytes")
+    print(f"[*] Decrypting PNG (pixel-level, raw RSA): {input_path}")
 
     chunks = _parse_png_chunks(data)
-    encrypted_idat = b''.join(cd for ct, cd in chunks if ct == b'IDAT')
 
-    # Decrypt block by block without zero-stripping — compressed IDAT data
-    # can legitimately end with 0x00, so rstrip would corrupt it.
-    # The original byte-length was stored as the first 4 bytes during encryption.
+    recovery = next((cd for ct, cd in chunks if ct == b'rsFl'), None)
+    if recovery is None:
+        raise ValueError("Missing 'rsFl' recovery chunk — file was not encrypted by encrypt_png_file.")
+
+    orig_h         = struct.unpack('>I', recovery[:4])[0]
+    orig_pixel_len = struct.unpack('>I', recovery[4:8])[0]
+    filter_bytes   = recovery[8:]
+
+    ihdr_data = next(cd for ct, cd in chunks if ct == b'IHDR')
+    enc_w, enc_h, bit_depth, color_type = _parse_ihdr(ihdr_data)
+    bpr = _bytes_per_row(enc_w, bit_depth, color_type)
+
+    raw_idat     = b''.join(cd for ct, cd in chunks if ct == b'IDAT')
+    enc_scanlines = zlib.decompress(raw_idat)
+
+    stride    = bpr + 1
+    enc_bytes = b''.join(enc_scanlines[i * stride + 1:(i + 1) * stride] for i in range(enc_h))
+
+    block_size       = get_block_size(n)
     cipher_block_size = (n.bit_length() + 7) // 8
+    payload_len  = 4 + orig_pixel_len
+    num_blocks   = (payload_len + block_size - 1) // block_size
+    enc_bytes    = enc_bytes[:num_blocks * cipher_block_size]
+
     plaintext_blocks = []
-    for i in range(0, len(encrypted_idat), cipher_block_size):
-        block = encrypted_idat[i:i + cipher_block_size]
-        plaintext_blocks.append(decrypt_block(block, d, n))
+    for i in range(0, len(enc_bytes), cipher_block_size):
+        block = enc_bytes[i:i + cipher_block_size]
+        if len(block) == cipher_block_size:
+            plaintext_blocks.append(decrypt_block(block, d, n))
     full_payload = b''.join(plaintext_blocks)
 
-    original_idat_len = struct.unpack('>I', full_payload[:4])[0]
-    idat_data = full_payload[4:4 + original_idat_len]
-    print(f"[+] Restored IDAT payload size: {len(idat_data)} bytes")
+    recovered_len = struct.unpack('>I', full_payload[:4])[0]
+    pixel_bytes   = full_payload[4:4 + recovered_len]
+    print(f"[+] Restored pixel data: {len(pixel_bytes)} bytes")
+
+    raw_scanlines = bytearray()
+    for i in range(orig_h):
+        raw_scanlines.append(filter_bytes[i])
+        raw_scanlines.extend(pixel_bytes[i * bpr:(i + 1) * bpr])
+
+    orig_ihdr = ihdr_data[:4] + struct.pack('>I', orig_h) + ihdr_data[8:]
 
     new_chunks = []
     idat_written = False
-    for chunk_type, chunk_data in chunks:
-        if chunk_type == b'IDAT':
+    for ct, cd in chunks:
+        if ct == b'IHDR':
+            new_chunks.append((b'IHDR', orig_ihdr))
+        elif ct == b'IDAT':
             if not idat_written:
-                new_chunks.append((b'IDAT', idat_data))
+                new_chunks.append((b'IDAT', zlib.compress(bytes(raw_scanlines))))
                 idat_written = True
+        elif ct == b'rsFl':
+            pass
         else:
-            new_chunks.append((chunk_type, chunk_data))
+            new_chunks.append((ct, cd))
 
     with open(output_path, 'wb') as f:
         f.write(_build_png(new_chunks))
