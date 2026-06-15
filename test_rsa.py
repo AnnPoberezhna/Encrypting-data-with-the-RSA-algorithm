@@ -7,8 +7,12 @@ from RSA import (
     encrypt_block,
     decrypt_block,
     get_block_size,
-    encrypt_data,
-    decrypt_data,
+    encrypt_data_ecb,
+    decrypt_data_ecb,
+    encrypt_data_cbc,
+    decrypt_data_cbc,
+    encrypt_data_ctr,
+    decrypt_data_ctr,
     encrypt_png_file,
     decrypt_png_file,
     PNG_SIGNATURE,
@@ -121,18 +125,16 @@ def test_block_encryption_decryption():
     print("[✓] All tests passed")
 
 
-def test_data_encryption_decryption():
-    """Test encryption and decryption of multi-block data"""
+def test_data_encryption_decryption_ecb():
+    """Test ECB mode encryption and decryption of multi-block data"""
     print("\n" + "="*70)
-    print("TEST: Multi-block Data Encryption and Decryption")
+    print("TEST: ECB Mode — Multi-block Data Encryption and Decryption")
     print("="*70)
     
-    # Generate keys
     public_key, private_key = generate_keys(key_size=512)
     n, e = public_key
     n_priv, d = private_key
     
-    # Test data of various sizes
     test_data = [
         b"Hello World!",
         b"The quick brown fox jumps over the lazy dog" * 3,
@@ -141,23 +143,101 @@ def test_data_encryption_decryption():
     
     for plaintext in test_data:
         print(f"\nData: {len(plaintext)} bytes")
-        
-        # Encryption
-        ciphertext = encrypt_data(plaintext, e, n)
+        ciphertext = encrypt_data_ecb(plaintext, e, n)
         print(f"Encrypted: {len(ciphertext)} bytes")
-        
-        # Decryption
-        decrypted = decrypt_data(ciphertext, d, n)
+        decrypted = decrypt_data_ecb(ciphertext, d, n)
         print(f"Decrypted: {len(decrypted)} bytes")
-        
-        # Compare
         match = decrypted == plaintext
         status = "[✓]" if match else "[✗]"
         print(f"{status} Data matches: {match}")
-        
-        assert match, f"Mismatch for data of size {len(plaintext)}"
+        assert match, f"ECB mismatch for data of size {len(plaintext)}"
     
-    print("\n[✓] All tests passed")
+    print("\n[✓] All ECB tests passed")
+
+
+def test_data_encryption_decryption_cbc():
+    """Test CBC mode encryption and decryption"""
+    print("\n" + "="*70)
+    print("TEST: CBC Mode — Multi-block Data Encryption and Decryption")
+    print("="*70)
+    
+    public_key, private_key = generate_keys(key_size=512)
+    n, e = public_key
+    n_priv, d = private_key
+    
+    test_data = [
+        b"Hello World!",
+        b"Short",
+        b"The quick brown fox jumps over the lazy dog" * 3,
+        bytes(range(256)) * 2,
+        b"A" * (get_block_size(n) * 3 + 1),
+    ]
+    
+    for plaintext in test_data:
+        print(f"\nData: {len(plaintext)} bytes")
+        ciphertext = encrypt_data_cbc(plaintext, e, n)
+        print(f"Encrypted: {len(ciphertext)} bytes")
+        decrypted = decrypt_data_cbc(ciphertext, d, n)
+        print(f"Decrypted: {len(decrypted)} bytes")
+        match = decrypted == plaintext
+        status = "[✓]" if match else "[✗]"
+        print(f"{status} Data matches: {match}")
+        assert match, f"CBC mismatch for data of size {len(plaintext)}"
+    
+    # Verify that identical plaintexts produce different ciphertexts (different IV)
+    data = b"Same data same data same data"
+    c1 = encrypt_data_cbc(data, e, n)
+    c2 = encrypt_data_cbc(data, e, n)
+    assert c1 != c2, "CBC ciphertexts should differ due to random IV"
+    print("\n[✓] CBC is non-deterministic (different IV → different ciphertext)")
+    
+    print("\n[✓] All CBC tests passed")
+
+
+def test_data_encryption_decryption_ctr():
+    """Test CTR mode encryption and decryption"""
+    print("\n" + "="*70)
+    print("TEST: CTR Mode — Multi-block Data Encryption and Decryption")
+    print("="*70)
+    
+    public_key, private_key = generate_keys(key_size=512)
+    n, e = public_key
+    n_priv, d = private_key
+    
+    test_data = [
+        b"Hello World!",
+        b"Short",
+        b"The quick brown fox jumps over the lazy dog" * 3,
+        bytes(range(256)) * 2,
+        b"B" * (get_block_size(n) * 3 + 1),
+    ]
+    
+    for plaintext in test_data:
+        print(f"\nData: {len(plaintext)} bytes")
+        ciphertext = encrypt_data_ctr(plaintext, e, n)
+        print(f"Encrypted: {len(ciphertext)} bytes")
+        decrypted = decrypt_data_ctr(ciphertext, e, n)
+        print(f"Decrypted: {len(decrypted)} bytes")
+        match = decrypted == plaintext
+        status = "[✓]" if match else "[✗]"
+        print(f"{status} Data matches: {match}")
+        assert match, f"CTR mismatch for data of size {len(plaintext)}"
+    
+    # Verify non-determinism (different nonce → different ciphertext)
+    data = b"Same data same"
+    c1 = encrypt_data_ctr(data, e, n)
+    c2 = encrypt_data_ctr(data, e, n)
+    assert c1 != c2, "CTR ciphertexts should differ due to random nonce"
+    print("\n[✓] CTR is non-deterministic (different nonce → different ciphertext)")
+    
+    # Verify no padding needed — size preservation for full blocks
+    exact = b"A" * get_block_size(n)
+    ct = encrypt_data_ctr(exact, e, n)
+    nonce_len = get_block_size(n) // 2
+    assert len(ct) == nonce_len + len(exact), "CTR should not add padding"
+    print("[✓] CTR requires no padding (ciphertext ≈ plaintext + nonce)")
+    
+    print("\n[✓] All CTR tests passed")
 
 
 def test_file_encryption_png():
@@ -249,7 +329,9 @@ def main():
     test_mod_inverse()
     test_key_generation()
     test_block_encryption_decryption()
-    test_data_encryption_decryption()
+    test_data_encryption_decryption_ecb()
+    test_data_encryption_decryption_cbc()
+    test_data_encryption_decryption_ctr()
     test_file_encryption_png()
     
     print("\n" + "#"*70)

@@ -1,5 +1,6 @@
 from sympy import randprime
 import math
+import os
 import struct
 import zlib
 
@@ -152,46 +153,147 @@ def decrypt_block(ciphertext_block, d, n):
     return plain_bytes
 
 
-def encrypt_data(plaintext_bytes, e, n):
+def encrypt_data_ecb(plaintext_bytes, e, n):
     """
-    Encrypts data (file) in blocks.
+    ECB mode (Electronic CodeBook):
+    Each block is encrypted independently.
+    Identical plaintext blocks produce identical ciphertext blocks.
     """
     block_size = get_block_size(n)
     ciphertext_blocks = []
     
-    # Split data into blocks
     for i in range(0, len(plaintext_bytes), block_size):
         block = plaintext_bytes[i:i+block_size]
-        
-        # Padding: if last block is smaller, fill with zeros
         if len(block) < block_size:
             block = block + b'\x00' * (block_size - len(block))
-        
         encrypted_block = encrypt_block(block, e, n)
         ciphertext_blocks.append(encrypted_block)
     
-    # Combine all blocks into one byte string
     return b''.join(ciphertext_blocks)
 
 
-def decrypt_data(ciphertext_bytes, d, n):
+def decrypt_data_ecb(ciphertext_bytes, d, n):
     """
-    Decrypts data (file) in blocks.
+    ECB mode (Electronic CodeBook):
+    Each block is decrypted independently.
     """
     cipher_block_size = (n.bit_length() + 7) // 8
     plaintext_blocks = []
     
-    # Split data into blocks
     for i in range(0, len(ciphertext_bytes), cipher_block_size):
         block = ciphertext_bytes[i:i+cipher_block_size]
-        
         decrypted_block = decrypt_block(block, d, n)
         plaintext_blocks.append(decrypted_block)
     
-    # Combine blocks and remove padding
-    plaintext = b''.join(plaintext_blocks).rstrip(b'\x00')
-    
-    return plaintext
+    return b''.join(plaintext_blocks).rstrip(b'\x00')
+
+
+# Backward-compatible aliases
+encrypt_data = encrypt_data_ecb
+decrypt_data = decrypt_data_ecb
+
+
+def encrypt_data_cbc(plaintext_bytes, e, n):
+    """
+    CBC mode (Cipher Block Chaining):
+    Each plaintext block is XORed with the previous ciphertext block
+    before encryption. Uses PKCS#7 padding and a random IV.
+    """
+    block_size = get_block_size(n)
+    cipher_block_size = (n.bit_length() + 7) // 8
+
+    pad_len = block_size - (len(plaintext_bytes) % block_size)
+    plaintext_bytes = plaintext_bytes + bytes([pad_len] * pad_len)
+
+    iv = os.urandom(cipher_block_size)
+    ciphertext_blocks = [iv]
+    prev = iv
+
+    for i in range(0, len(plaintext_bytes), block_size):
+        block = plaintext_bytes[i:i + block_size]
+        mixed = bytes(a ^ b for a, b in zip(block, prev[:block_size]))
+        encrypted = encrypt_block(mixed, e, n)
+        ciphertext_blocks.append(encrypted)
+        prev = encrypted
+
+    return b''.join(ciphertext_blocks)
+
+
+def decrypt_data_cbc(ciphertext_bytes, d, n):
+    """
+    CBC mode (Cipher Block Chaining):
+    Decrypt each block, then XOR with the previous ciphertext block.
+    """
+    cipher_block_size = (n.bit_length() + 7) // 8
+    block_size = get_block_size(n)
+
+    iv = ciphertext_bytes[:cipher_block_size]
+    prev = iv
+    plaintext_blocks = []
+
+    for i in range(cipher_block_size, len(ciphertext_bytes), cipher_block_size):
+        ct_block = ciphertext_bytes[i:i + cipher_block_size]
+        decrypted = decrypt_block(ct_block, d, n)
+        mixed = bytes(a ^ b for a, b in zip(decrypted, prev[:block_size]))
+        plaintext_blocks.append(mixed)
+        prev = ct_block
+
+    result = b''.join(plaintext_blocks)
+    pad_len = result[-1]
+    if pad_len > block_size:
+        raise ValueError("Invalid PKCS#7 padding")
+    return result[:-pad_len]
+
+
+def encrypt_data_ctr(plaintext_bytes, e, n):
+    """
+    CTR mode (Counter):
+    Encrypt counter values with RSA and XOR the keystream with plaintext.
+    No padding needed. Uses a random nonce.
+    The counter block is sized to block_size bytes so its integer value < n.
+    """
+    block_size = get_block_size(n)
+    nonce_len = block_size // 2
+
+    nonce = os.urandom(nonce_len)
+    ciphertext_parts = [nonce]
+    counter = 0
+
+    for i in range(0, len(plaintext_bytes), block_size):
+        chunk = plaintext_bytes[i:i + block_size]
+        counter_bytes = nonce + counter.to_bytes(block_size - nonce_len, 'big')
+        keystream = encrypt_block(counter_bytes, e, n)
+        encrypted_chunk = bytes(a ^ b for a, b in zip(chunk, keystream[:len(chunk)]))
+        ciphertext_parts.append(encrypted_chunk)
+        counter += 1
+
+    return b''.join(ciphertext_parts)
+
+
+def decrypt_data_ctr(ciphertext_bytes, e, n):
+    """
+    CTR mode (Counter):
+    Same as encryption — XOR keystream with ciphertext.
+    Uses the RSA encryption function (e, n) for keystream generation.
+    """
+    block_size = get_block_size(n)
+    nonce_len = block_size // 2
+
+    nonce = ciphertext_bytes[:nonce_len]
+    rest = ciphertext_bytes[nonce_len:]
+
+    plaintext_parts = []
+    counter = 0
+
+    for i in range(0, len(rest), block_size):
+        chunk = rest[i:i + block_size]
+        counter_bytes = nonce + counter.to_bytes(block_size - nonce_len, 'big')
+        keystream = encrypt_block(counter_bytes, e, n)
+        decrypted_chunk = bytes(a ^ b for a, b in zip(chunk, keystream[:len(chunk)]))
+        plaintext_parts.append(decrypted_chunk)
+        counter += 1
+
+    return b''.join(plaintext_parts)
 
 
 def _parse_ihdr(ihdr_data):
@@ -248,7 +350,8 @@ def _build_png(chunks):
 
 def encrypt_png_file(input_path, output_path, public_key):
     """
-    Encrypts a PNG file at the pixel level (raw RSA, ECB mode).
+    Encrypts a PNG file at the pixel level (raw RSA, ECB mode — blocks
+    encrypted independently with zero-padding).
 
     Steps:
       1. Decompress IDAT → raw scanlines (filter_byte + pixel_bytes per row).
@@ -321,7 +424,7 @@ def encrypt_png_file(input_path, output_path, public_key):
 
 def decrypt_png_file(input_path, output_path, private_key):
     """
-    Decrypts a PNG file produced by encrypt_png_file.
+    Decrypts a PNG file produced by encrypt_png_file (ECB mode).
     Restores the original file byte-for-byte (including original filter bytes).
     """
     n, d = private_key
