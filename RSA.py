@@ -11,9 +11,9 @@ def generate_prime(min_bits, max_bits):
     """
     Generates a prime number with random bit length.
     """
-    bit_length = 2 ** (min_bits - 1)
+    lower_bound = 2 ** (min_bits - 1)
     upper_bound = 2 ** max_bits
-    return randprime(bit_length, upper_bound)
+    return randprime(lower_bound, upper_bound)
 
 
 
