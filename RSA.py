@@ -41,7 +41,8 @@ def mod_inverse(e, phi):
     if gcd != 1:
         raise ValueError("Modular inverse does not exist")
     
-    return (x % phi + phi) % phi
+    # return (x % phi + phi) % phi
+    return x % phi
 
 
 def generate_keys(key_size=2048):
