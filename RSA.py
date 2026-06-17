@@ -376,6 +376,7 @@ def encrypt_png_file(input_path, output_path, public_key):
 
     chunks = _parse_png_chunks(data)
 
+    # cd - chunk data, ct - chunk type
     ihdr_data = next(cd for ct, cd in chunks if ct == b'IHDR')
     orig_w, orig_h, bit_depth, color_type = _parse_ihdr(ihdr_data)
     bpr = _bytes_per_row(orig_w, bit_depth, color_type)
