@@ -376,15 +376,18 @@ def encrypt_png_file(input_path, output_path, public_key):
 
     chunks = _parse_png_chunks(data)
 
+    # parsing all data from original IHDR
     # cd - chunk data, ct - chunk type
     ihdr_data = next(cd for ct, cd in chunks if ct == b'IHDR')
     orig_w, orig_h, bit_depth, color_type = _parse_ihdr(ihdr_data)
     bpr = _bytes_per_row(orig_w, bit_depth, color_type)
 
+    # decompressing original IDAT chunk data
     raw_idat = b''.join(cd for ct, cd in chunks if ct == b'IDAT')
     raw_scanlines = zlib.decompress(raw_idat)
     print(f"[*] Decompressed IDAT: {len(raw_scanlines)} bytes  ({orig_h} rows × {bpr} px-bytes)")
 
+    # defining filter bytes
     stride = bpr + 1
     filter_bytes = bytes(raw_scanlines[i * stride] for i in range(orig_h))
     pixel_bytes  = b''.join(raw_scanlines[i * stride + 1:(i + 1) * stride] for i in range(orig_h))
